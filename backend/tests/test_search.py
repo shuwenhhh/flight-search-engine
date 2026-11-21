@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import app
 from app.search import load_dataset
@@ -85,3 +86,55 @@ def test_invalid_dataset_rows_are_excluded_and_prices_are_normalized() -> None:
     assert all(flight.origin != flight.destination for flight in flights)
     assert all(isinstance(flight.price, float) for flight in flights)
     assert not any(flight.origin == "JKF" or flight.destination == "JKF" for flight in flights)
+
+
+@pytest.mark.parametrize("origin,destination,flight_id,duration,price,layovers", [
+    ("JFK", "LAX", "SP103", 375, 279, []),
+    ("JFK", "LAX", "SP110-SP120", 450, 414, [45]),
+    ("SFO", "NRT", "SP998-SP500", 900, 944, [90]),
+    ("BOS", "SEA", "SP260-SP221", 630, 428, [180]),
+    ("SYD", "LAX", "SP540", 900, 1099, []),
+])
+def test_known_dataset_itineraries(origin, destination, flight_id, duration, price, layovers) -> None:
+    results = search(origin, destination).json()["results"]
+    itinerary = next(result for result in results if result["id"] == flight_id)
+    assert itinerary["total_duration_minutes"] == duration
+    assert itinerary["price_usd"] == price
+    assert itinerary["layover_minutes"] == layovers
+
+
+@pytest.mark.parametrize("origin,destination", [("JFK", "LAX"), ("SFO", "NRT"), ("BOS", "SEA"), ("SYD", "LAX")])
+def test_results_are_sorted_and_connections_are_valid(origin, destination) -> None:
+    results = search(origin, destination).json()["results"]
+    assert results
+    durations = [result["total_duration_minutes"] for result in results]
+    assert durations == sorted(durations)
+    for result in results:
+        assert all(45 <= minutes <= 360 for minutes in result["layover_minutes"])
+        assert all(a["destination"] == b["origin"] for a, b in zip(result["segments"], result["segments"][1:]))
+
+
+def test_no_flights_on_date_outside_dataset() -> None:
+    response = client.get("/flights/search", params={"origin": "JFK", "destination": "LAX", "date": "2024-03-20"})
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+    assert response.json()["count"] == 0
+
+
+def test_invalid_date_is_rejected() -> None:
+    response = client.get("/flights/search", params={"origin": "JFK", "destination": "LAX", "date": "2024-02-30"})
+    assert response.status_code == 422
+
+
+def test_syd_lax_local_offsets_are_preserved() -> None:
+    flight = next(result for result in search("SYD", "LAX").json()["results"] if result["id"] == "SP540")
+    segment = flight["segments"][0]
+    assert segment["departure_local"] == "2024-03-15T09:00:00+11:00"
+    assert segment["arrival_local"] == "2024-03-15T06:00:00-07:00"
+    assert flight["total_duration_minutes"] == 900
+
+
+def test_international_connection_rule_is_applied_per_connection() -> None:
+    results = search("JFK", "ORD").json()["results"]
+
+    assert not any(result["id"] == "SP730-SP763-SP825" for result in results)

@@ -1,14 +1,24 @@
+from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.search import list_airports, search_flights
+from app.search import list_airports, load_dataset, search_flights
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Load and validate the flight dataset before serving requests."""
+    load_dataset()
+    yield
+
 
 app = FastAPI(
     title="SkyPath API",
     description="Backend foundation for the SkyPath take-home project.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
