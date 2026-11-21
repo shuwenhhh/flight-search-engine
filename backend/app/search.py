@@ -152,7 +152,7 @@ def search_flights(origin: str, destination: str, travel_date: date) -> list[dic
             candidate_departure = candidate.departure.astimezone(timezone.utc)
             if candidate.destination in visited or candidate_departure < earliest:
                 continue
-            if candidate_departure - last.arrival.astimezone(timezone.utc) > timedelta(hours=12):
+            if candidate_departure - last.arrival.astimezone(timezone.utc) > timedelta(hours=6):
                 continue
             walk(path + (candidate,), visited | {candidate.destination})
 

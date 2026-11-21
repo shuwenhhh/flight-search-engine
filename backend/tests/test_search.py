@@ -20,6 +20,9 @@ def test_jfk_to_lax_returns_direct_and_connecting_options() -> None:
     results = response.json()["results"]
     assert any(result["is_direct"] for result in results)
     assert any(result["stops"] > 0 for result in results)
+    for result in results:
+        assert all(45 <= minutes <= 360 for minutes in result["layover_minutes"])
+        assert all(first["destination"] == second["origin"] for first, second in zip(result["segments"], result["segments"][1:]))
 
 
 def test_sfo_to_nrt_enforces_90_minute_international_layover() -> None:
