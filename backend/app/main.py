@@ -3,7 +3,7 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.search import search_flights
+from app.search import list_airports, search_flights
 
 app = FastAPI(
     title="SkyPath API",
@@ -46,4 +46,10 @@ async def flight_search(
         "count": len(results),
         "results": results,
     }
+
+
+@app.get("/airports", tags=["flights"])
+async def airports() -> dict:
+    results = list_airports()
+    return {"count": len(results), "results": results}
 

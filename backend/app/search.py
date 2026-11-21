@@ -1,17 +1,45 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
-AIRPORTS = {
-    "BOS", "HND", "JFK", "LAS", "LAX", "LHR", "NRT", "SEA", "SFO", "SYD"
-}
+DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "flights.json"
+DOMESTIC_MIN_LAYOVER_MINUTES = 45
+INTERNATIONAL_MIN_LAYOVER_MINUTES = 90
+MAX_SEGMENTS = 3
+
+
+@dataclass(frozen=True)
+class Airport:
+    code: str
+    name: str
+    city: str
+    country: str
+    timezone: str
+
+
+@dataclass(frozen=True)
+class FlightRecord:
+    flight_number: str
+    airline: str
+    origin: str
+    destination: str
+    departure: datetime
+    arrival: datetime
+    price: float
+    aircraft: str
 
 
 @dataclass(frozen=True)
 class Segment:
     flight_number: str
+    airline: str
+    aircraft: str
     origin: str
     destination: str
     departure_local: str
@@ -24,9 +52,9 @@ class Itinerary:
     id: str
     segments: tuple[Segment, ...]
     total_duration_minutes: int
-    price_usd: int
-    layover_minutes: tuple[int, ...] = ()
-    minimum_layover_minutes: int | None = None
+    price_usd: float
+    layover_minutes: tuple[int, ...]
+    minimum_layover_minutes: int | None
 
     def to_dict(self) -> dict:
         result = asdict(self)
@@ -35,65 +63,104 @@ class Itinerary:
         return result
 
 
-def _segment(
-    number: str,
-    origin: str,
-    destination: str,
-    departure: str,
-    arrival: str,
-    duration: int,
-) -> Segment:
-    return Segment(number, origin, destination, departure, arrival, duration)
+@lru_cache(maxsize=1)
+def load_dataset() -> tuple[dict[str, Airport], tuple[FlightRecord, ...]]:
+    raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    airports = {item["code"].upper(): Airport(**item) for item in raw["airports"]}
+    flights: list[FlightRecord] = []
+    for item in raw["flights"]:
+        origin = item.get("origin", "").upper()
+        destination = item.get("destination", "").upper()
+        if origin not in airports or destination not in airports or origin == destination:
+            continue
+        try:
+            departure = datetime.fromisoformat(item["departureTime"]).replace(tzinfo=ZoneInfo(airports[origin].timezone))
+            arrival = datetime.fromisoformat(item["arrivalTime"]).replace(tzinfo=ZoneInfo(airports[destination].timezone))
+            price = float(item["price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if arrival.astimezone(timezone.utc) <= departure.astimezone(timezone.utc):
+            continue
+        flights.append(FlightRecord(
+            flight_number=item["flightNumber"], airline=item["airline"], origin=origin,
+            destination=destination, departure=departure, arrival=arrival,
+            price=price, aircraft=item["aircraft"],
+        ))
+    return airports, tuple(sorted(flights, key=lambda flight: flight.departure.astimezone(timezone.utc)))
 
 
-def _fixtures(travel_date: date) -> dict[tuple[str, str], list[Itinerary]]:
-    day = travel_date.isoformat()
-    next_day = (travel_date + timedelta(days=1)).isoformat()
-    return {
-        ("JFK", "LAX"): [
-            Itinerary("jfk-lax-direct", (_segment("AA 1", "JFK", "LAX", f"{day}T08:00:00-05:00", f"{day}T11:20:00-08:00", 380),), 380, 319),
-            Itinerary("jfk-phx-lax", (
-                _segment("AA 2821", "JFK", "PHX", f"{day}T07:15:00-05:00", f"{day}T10:20:00-07:00", 305),
-                _segment("AA 1668", "PHX", "LAX", f"{day}T11:35:00-07:00", f"{day}T12:55:00-08:00", 80),
-            ), 460, 268, (75,)),
-        ],
-        ("SFO", "NRT"): [
-            Itinerary("sfo-sea-nrt-valid", (
-                _segment("AS 1087", "SFO", "SEA", f"{day}T07:00:00-08:00", f"{day}T09:10:00-08:00", 130),
-                _segment("JL 67", "SEA", "NRT", f"{day}T10:50:00-08:00", f"{next_day}T14:20:00+09:00", 630),
-            ), 860, 742, (100,), 90),
-        ],
-        ("BOS", "SEA"): [
-            Itinerary("bos-ord-sea", (
-                _segment("UA 521", "BOS", "ORD", f"{day}T06:30:00-04:00", f"{day}T08:20:00-05:00", 170),
-                _segment("UA 2091", "ORD", "SEA", f"{day}T09:35:00-05:00", f"{day}T11:55:00-07:00", 260),
-            ), 505, 289, (75,)),
-            Itinerary("bos-den-sea", (
-                _segment("DL 1843", "BOS", "DEN", f"{day}T07:20:00-04:00", f"{day}T10:05:00-06:00", 285),
-                _segment("DL 2310", "DEN", "SEA", f"{day}T11:30:00-06:00", f"{day}T13:25:00-07:00", 175),
-            ), 545, 311, (85,)),
-        ],
-        ("SYD", "LAX"): [
-            Itinerary("syd-lax-dateline", (
-                _segment("QF 11", "SYD", "LAX", f"{day}T10:00:00+11:00", f"{day}T06:00:00-07:00", 840),
-            ), 840, 981),
-        ],
-    }
+def list_airports() -> list[dict[str, str]]:
+    airports, _ = load_dataset()
+    return [asdict(airport) for airport in sorted(airports.values(), key=lambda airport: (airport.city, airport.code))]
+
+
+def _minutes(delta: timedelta) -> int:
+    return round(delta.total_seconds() / 60)
+
+
+def _minimum_layover(origin: Airport, destination: Airport) -> int:
+    return INTERNATIONAL_MIN_LAYOVER_MINUTES if origin.country != destination.country else DOMESTIC_MIN_LAYOVER_MINUTES
+
+
+def _to_itinerary(path: tuple[FlightRecord, ...], minimum_layover: int) -> Itinerary:
+    segments = tuple(Segment(
+        flight_number=flight.flight_number,
+        airline=flight.airline,
+        aircraft=flight.aircraft,
+        origin=flight.origin,
+        destination=flight.destination,
+        departure_local=flight.departure.isoformat(),
+        arrival_local=flight.arrival.isoformat(),
+        duration_minutes=_minutes(flight.arrival.astimezone(timezone.utc) - flight.departure.astimezone(timezone.utc)),
+    ) for flight in path)
+    layovers = tuple(_minutes(current.departure.astimezone(timezone.utc) - previous.arrival.astimezone(timezone.utc)) for previous, current in zip(path, path[1:]))
+    total = _minutes(path[-1].arrival.astimezone(timezone.utc) - path[0].departure.astimezone(timezone.utc))
+    return Itinerary(
+        id="-".join(flight.flight_number for flight in path), segments=segments,
+        total_duration_minutes=total, price_usd=round(sum(flight.price for flight in path), 2),
+        layover_minutes=layovers,
+        minimum_layover_minutes=minimum_layover if layovers else None,
+    )
 
 
 def search_flights(origin: str, destination: str, travel_date: date) -> list[dict]:
+    airports, flights = load_dataset()
     origin = origin.upper().strip()
     destination = destination.upper().strip()
-    invalid = [code for code in (origin, destination) if code not in AIRPORTS]
+    invalid = [code for code in (origin, destination) if code not in airports]
     if invalid:
         raise ValueError(f"Unknown airport code: {', '.join(invalid)}")
     if origin == destination:
         raise ValueError("Origin and destination must be different")
 
-    itineraries = _fixtures(travel_date).get((origin, destination), [])
-    valid = [
-        itinerary for itinerary in itineraries
-        if itinerary.minimum_layover_minutes is None
-        or all(minutes >= itinerary.minimum_layover_minutes for minutes in itinerary.layover_minutes)
-    ]
-    return [itinerary.to_dict() for itinerary in sorted(valid, key=lambda item: item.total_duration_minutes)]
+    minimum_layover = _minimum_layover(airports[origin], airports[destination])
+    departures: dict[str, list[FlightRecord]] = {}
+    for flight in flights:
+        departures.setdefault(flight.origin, []).append(flight)
+
+    matches: list[tuple[FlightRecord, ...]] = []
+
+    def walk(path: tuple[FlightRecord, ...], visited: frozenset[str]) -> None:
+        last = path[-1]
+        if last.destination == destination:
+            matches.append(path)
+            return
+        if len(path) >= MAX_SEGMENTS:
+            return
+        earliest = last.arrival.astimezone(timezone.utc) + timedelta(minutes=minimum_layover)
+        for candidate in departures.get(last.destination, []):
+            candidate_departure = candidate.departure.astimezone(timezone.utc)
+            if candidate.destination in visited or candidate_departure < earliest:
+                continue
+            if candidate_departure - last.arrival.astimezone(timezone.utc) > timedelta(hours=12):
+                continue
+            walk(path + (candidate,), visited | {candidate.destination})
+
+    for first in departures.get(origin, []):
+        if first.departure.date() == travel_date:
+            walk((first,), frozenset({origin, first.destination}))
+
+    itineraries = [_to_itinerary(path, minimum_layover) for path in matches]
+    unique = {itinerary.id: itinerary for itinerary in itineraries}
+    ordered = sorted(unique.values(), key=lambda item: (item.total_duration_minutes, item.price_usd, item.id))
+    return [itinerary.to_dict() for itinerary in ordered[:50]]

@@ -2,9 +2,9 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 type SortKey = 'Recommended' | 'Cheapest' | 'Fastest'
-type Airport = { code: string; city: string; name: string; region: string }
+type Airport = { code: string; city: string; name: string; region?: string; country?: string; timezone?: string }
 type SearchStatus = 'success' | 'loading' | 'empty' | 'error'
-type ApiSegment = { flight_number: string; origin: string; destination: string; departure_local: string; arrival_local: string; duration_minutes: number }
+type ApiSegment = { flight_number: string; airline: string; aircraft: string; origin: string; destination: string; departure_local: string; arrival_local: string; duration_minutes: number }
 type ApiItinerary = { id: string; segments: ApiSegment[]; total_duration_minutes: number; price_usd: number; layover_minutes: number[]; minimum_layover_minutes: number | null; stops: number; is_direct: boolean }
 type ApiResponse = { origin: string; destination: string; date: string; count: number; results: ApiItinerary[] }
 type Flight = ApiItinerary & { airline: string; code: string }
@@ -35,12 +35,8 @@ function timeLabel(iso: string) {
   const hours = Number(hoursText)
   return `${hours % 12 || 12}:${minutes} ${hours >= 12 ? 'PM' : 'AM'}`
 }
-function airlineName(number: string) {
-  const prefix = number.split(' ')[0]
-  return ({ AA: 'American Airlines', AS: 'Alaska Airlines', JL: 'Japan Airlines', UA: 'United Airlines', DL: 'Delta Air Lines', QF: 'Qantas' } as Record<string, string>)[prefix] ?? 'Partner airline'
-}
 function asFlight(itinerary: ApiItinerary): Flight {
-  return { ...itinerary, airline: airlineName(itinerary.segments[0].flight_number), code: itinerary.segments.map((segment) => segment.flight_number).join(' · ') }
+  return { ...itinerary, airline: itinerary.segments[0].airline, code: itinerary.segments.map((segment) => segment.flight_number).join(' · ') }
 }
 async function requestFlights(origin: string, destination: string, date: string): Promise<Flight[]> {
   const params = new URLSearchParams({ origin, destination, date })
@@ -49,13 +45,20 @@ async function requestFlights(origin: string, destination: string, date: string)
   if (!response.ok) throw new Error('detail' in body && body.detail ? body.detail : 'The flight service returned an error.')
   return (body as ApiResponse).results.map(asFlight)
 }
+async function requestAirports(): Promise<Airport[]> {
+  const response = await fetch(`${API_BASE_URL}/airports`)
+  if (!response.ok) throw new Error('Unable to load airports.')
+  const body = await response.json() as { results: Airport[] }
+  return body.results
+}
 
 function App() {
   const [origin, setOrigin] = useState(airports[0])
   const [destination, setDestination] = useState(airports[1])
   const [originQuery, setOriginQuery] = useState('New York (JFK)')
   const [destinationQuery, setDestinationQuery] = useState('Los Angeles (LAX)')
-  const [departDate, setDepartDate] = useState('2026-11-24')
+  const [departDate, setDepartDate] = useState('2024-03-15')
+  const [airportOptions, setAirportOptions] = useState(airports)
   const [results, setResults] = useState<Flight[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [sort, setSort] = useState<SortKey>('Fastest')
@@ -79,7 +82,10 @@ function App() {
       setResults([]); setSearchStatus('error'); setSearchError(error instanceof Error ? error.message : 'Unable to load flights.')
     }
   }
-  useEffect(() => { void performSearch(airports[0], airports[1], '2026-11-24') }, [])
+  useEffect(() => {
+    void requestAirports().then(setAirportOptions).catch(() => setAirportOptions(airports))
+    void performSearch(airports[0], airports[1], '2024-03-15')
+  }, [])
   useEffect(() => {
     if (!detailsOpen) return
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setDetailsOpen(false) }
@@ -96,7 +102,7 @@ function App() {
   const selected = results.find((flight) => flight.id === selectedId) ?? orderedFlights[0]
   const airportSuggestions = (query: string) => {
     const normalized = query.trim().toLowerCase()
-    return airports.filter((airport) => !normalized || `${airport.code} ${airport.city} ${airport.name} ${airport.region}`.toLowerCase().includes(normalized)).slice(0, 6)
+    return airportOptions.filter((airport) => !normalized || `${airport.code} ${airport.city} ${airport.name} ${airport.region ?? airport.country ?? ''}`.toLowerCase().includes(normalized)).slice(0, 6)
   }
   const selectAirport = (field: 'origin' | 'destination', airport: Airport) => {
     if (field === 'origin') { setOrigin(airport); setOriginQuery(`${airport.city} (${airport.code})`) }
@@ -123,8 +129,8 @@ function App() {
       <button className="edit-search" onClick={() => setSearchOpen((open) => !open)}>{searchOpen ? 'Done' : 'Edit search'}</button>
     </section>
     {searchOpen && <section className="edit-panel" aria-label="Edit flight search">
-      {(['origin', 'destination'] as const).map((field) => { const query = field === 'origin' ? originQuery : destinationQuery; return <div className="airport-field" key={field}><label htmlFor={`${field}-airport`}>{field === 'origin' ? 'From' : 'To'}</label><input id={`${field}-airport`} role="combobox" aria-expanded={activeAirportField === field} aria-invalid={Boolean(formErrors[field])} autoComplete="off" value={query} onFocus={() => setActiveAirportField(field)} onChange={(event) => { if (field === 'origin') setOriginQuery(event.target.value); else setDestinationQuery(event.target.value); setActiveAirportField(field) }} />{activeAirportField === field && <div className="airport-suggestions" role="listbox">{airportSuggestions(query).map((airport) => <button type="button" role="option" key={airport.code} onMouseDown={(event) => event.preventDefault()} onClick={() => selectAirport(field, airport)}><strong>{airport.code}</strong><span><b>{airport.city}</b>{airport.name}<small>{airport.region}</small></span></button>)}{!airportSuggestions(query).length && <p>No matching airports</p>}</div>}{formErrors[field] && <p className="field-error">{formErrors[field]}</p>}</div> })}
-      <div className="date-picker-field"><span className="field-label">Departure date</span><button className="calendar-trigger single-date" type="button" aria-expanded={calendarOpen} onClick={() => setCalendarOpen((open) => !open)}><span><small>Depart</small>{departDate}</span></button>{calendarOpen && <div className="calendar-popover"><div className="calendar-instruction">Select departure date</div><div className="calendar-months">{[[2026, 10], [2026, 11]].map(([year, month]) => <section className="calendar-month" key={`${year}-${month}`}><h4>{monthLabels[month]} {year}</h4><div className="calendar-weekdays">{weekdayLabels.map((day) => <span key={day}>{day}</span>)}</div><div className="calendar-days">{calendarCells(year, month).map((day, index) => day === null ? <span key={`blank-${index}`} /> : (() => { const value = toDateValue(year, month, day); return <button type="button" key={value} className={value === departDate ? 'selected-date' : ''} onClick={() => { setDepartDate(value); setCalendarOpen(false) }}>{day}</button> })())}</div></section>)}</div></div>}{formErrors.dates && <p className="field-error">{formErrors.dates}</p>}</div>
+      {(['origin', 'destination'] as const).map((field) => { const query = field === 'origin' ? originQuery : destinationQuery; return <div className="airport-field" key={field}><label htmlFor={`${field}-airport`}>{field === 'origin' ? 'From' : 'To'}</label><input id={`${field}-airport`} role="combobox" aria-expanded={activeAirportField === field} aria-invalid={Boolean(formErrors[field])} autoComplete="off" value={query} onFocus={() => setActiveAirportField(field)} onChange={(event) => { if (field === 'origin') setOriginQuery(event.target.value); else setDestinationQuery(event.target.value); setActiveAirportField(field) }} />{activeAirportField === field && <div className="airport-suggestions" role="listbox">{airportSuggestions(query).map((airport) => <button type="button" role="option" key={airport.code} onMouseDown={(event) => event.preventDefault()} onClick={() => selectAirport(field, airport)}><strong>{airport.code}</strong><span><b>{airport.city}</b>{airport.name}<small>{airport.region ?? airport.country}</small></span></button>)}{!airportSuggestions(query).length && <p>No matching airports</p>}</div>}{formErrors[field] && <p className="field-error">{formErrors[field]}</p>}</div> })}
+      <div className="date-picker-field"><span className="field-label">Departure date</span><button className="calendar-trigger single-date" type="button" aria-expanded={calendarOpen} onClick={() => setCalendarOpen((open) => !open)}><span><small>Depart</small>{departDate}</span></button>{calendarOpen && <div className="calendar-popover"><div className="calendar-instruction">Select departure date</div><div className="calendar-months">{[[2024, 2], [2024, 3]].map(([year, month]) => <section className="calendar-month" key={`${year}-${month}`}><h4>{monthLabels[month]} {year}</h4><div className="calendar-weekdays">{weekdayLabels.map((day) => <span key={day}>{day}</span>)}</div><div className="calendar-days">{calendarCells(year, month).map((day, index) => day === null ? <span key={`blank-${index}`} /> : (() => { const value = toDateValue(year, month, day); return <button type="button" key={value} className={value === departDate ? 'selected-date' : ''} onClick={() => { setDepartDate(value); setCalendarOpen(false) }}>{day}</button> })())}</div></section>)}</div></div>}{formErrors.dates && <p className="field-error">{formErrors.dates}</p>}</div>
       <div className="search-actions"><p>Results are loaded from the FastAPI backend.</p><button className="submit-search" disabled={searchStatus === 'loading'} onClick={runSearch}>{searchStatus === 'loading' ? 'Searching flights…' : 'Search flights'}</button></div>
     </section>}
     <section className="workspace single" id="flights">

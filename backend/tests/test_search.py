@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.search import load_dataset
 
 client = TestClient(app)
 
@@ -26,8 +27,10 @@ def test_sfo_to_nrt_enforces_90_minute_international_layover() -> None:
     assert response.status_code == 200
     results = response.json()["results"]
     assert results
-    assert all(min(result["layover_minutes"]) >= 90 for result in results)
-    assert all(result["minimum_layover_minutes"] == 90 for result in results)
+    connecting = [result for result in results if result["layover_minutes"]]
+    assert connecting
+    assert all(min(result["layover_minutes"]) >= 90 for result in connecting)
+    assert all(result["minimum_layover_minutes"] == 90 for result in connecting)
 
 
 def test_bos_to_sea_returns_connections_only() -> None:
@@ -53,9 +56,29 @@ def test_invalid_airport_code_has_clear_error() -> None:
 def test_syd_to_lax_preserves_local_times_across_date_line() -> None:
     response = search("SYD", "LAX")
     assert response.status_code == 200
-    result = response.json()["results"][0]
-    segment = result["segments"][0]
-    assert segment["departure_local"] == "2024-03-15T10:00:00+11:00"
-    assert segment["arrival_local"] == "2024-03-15T06:00:00-07:00"
-    assert segment["arrival_local"][11:16] < segment["departure_local"][11:16]
-    assert segment["duration_minutes"] == 840
+    results = [result for result in response.json()["results"] if result["is_direct"]]
+    assert len(results) == 2
+    for result in results:
+        segment = result["segments"][0]
+        assert segment["departure_local"].startswith("2024-03-15")
+        assert segment["arrival_local"].startswith("2024-03-15")
+        assert segment["arrival_local"][11:16] < segment["departure_local"][11:16]
+        assert segment["duration_minutes"] == 900
+
+
+def test_airports_come_from_dataset() -> None:
+    response = client.get("/airports")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 25
+    assert any(airport["code"] == "SYD" and airport["timezone"] == "Australia/Sydney" for airport in body["results"])
+
+
+def test_invalid_dataset_rows_are_excluded_and_prices_are_normalized() -> None:
+    airports, flights = load_dataset()
+
+    assert flights
+    assert all(flight.origin in airports and flight.destination in airports for flight in flights)
+    assert all(flight.origin != flight.destination for flight in flights)
+    assert all(isinstance(flight.price, float) for flight in flights)
+    assert not any(flight.origin == "JKF" or flight.destination == "JKF" for flight in flights)
