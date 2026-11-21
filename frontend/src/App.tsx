@@ -35,6 +35,13 @@ function timeLabel(iso: string) {
   const hours = Number(hoursText)
   return `${hours % 12 || 12}:${minutes} ${hours >= 12 ? 'PM' : 'AM'}`
 }
+function localDateLabel(iso: string, timezone?: string) {
+  const date = new Date(iso)
+  const localDate = new Date(`${iso.slice(0, 10)}T12:00:00Z`)
+  const dateLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(localDate)
+  const zone = timezone ? new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'short' }).formatToParts(date).find((part) => part.type === 'timeZoneName')?.value : iso.slice(19)
+  return `${dateLabel} · ${zone || 'local time'}`
+}
 function asFlight(itinerary: ApiItinerary): Flight {
   return { ...itinerary, airline: itinerary.segments[0].airline, code: itinerary.segments.map((segment) => segment.flight_number).join(' · ') }
 }
@@ -142,8 +149,8 @@ function App() {
       </div>
     </section>
     {detailsOpen && searchStatus === 'success' && selected && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetailsOpen(false) }}><section className="flight-modal" role="dialog" aria-modal="true" aria-labelledby="flight-detail-title"><button className="modal-close" aria-label="Close flight details" onClick={() => setDetailsOpen(false)}>Close</button><span className="eyebrow">Flight details</span><h2 id="flight-detail-title">{selected.segments[0].origin} → {selected.segments[selected.segments.length - 1].destination}</h2><p className="detail-meta">{departDate} <span>·</span> {selected.is_direct ? 'Nonstop' : `${selected.stops} stop`} <span>·</span> {durationLabel(selected.total_duration_minutes)} total</p><div className="detail-airline"><strong>{selected.airline}</strong><span>{selected.code}</span></div>
-        <div className="segment-list">{selected.segments.map((segment, index) => <Fragment key={segment.flight_number}><div className="segment"><div className="segment-time"><strong>{timeLabel(segment.departure_local)}</strong><span>{segment.origin}</span></div><div><strong>{segment.origin} → {segment.destination}</strong><span>{segment.flight_number} · {durationLabel(segment.duration_minutes)}</span></div><div className="segment-arrival"><strong>{timeLabel(segment.arrival_local)}</strong><span>{segment.destination}</span></div></div>{index < selected.segments.length - 1 && <div className="layover"><div><strong>{durationLabel(selected.layover_minutes[index])} layover in {segment.destination}</strong><span>{selected.minimum_layover_minutes ? `International minimum: ${selected.minimum_layover_minutes} minutes` : 'Connection time included in total duration'}</span></div></div>}</Fragment>)}</div>
-        {selected.layover_minutes.length > 0 && <section className="connection-info"><h3>Connection details</h3>{selected.layover_minutes.map((minutes, index) => <div key={index}><strong>{selected.segments[index].destination}</strong><span>{durationLabel(minutes)} layover{selected.minimum_layover_minutes ? ` · ${selected.minimum_layover_minutes}-minute minimum applies` : ''}</span></div>)}</section>}
+        <div className="segment-list">{selected.segments.map((segment, index) => <Fragment key={segment.flight_number}><div className="segment"><div className="segment-time"><strong>{timeLabel(segment.departure_local)}</strong><span>{segment.origin}</span><span>{localDateLabel(segment.departure_local, airportOptions.find((airport) => airport.code === segment.origin)?.timezone)}</span></div><div><strong>{segment.origin} → {segment.destination}</strong><span>{segment.flight_number} · {durationLabel(segment.duration_minutes)}</span></div><div className="segment-arrival"><strong>{timeLabel(segment.arrival_local)}</strong><span>{segment.destination}</span><span>{localDateLabel(segment.arrival_local, airportOptions.find((airport) => airport.code === segment.destination)?.timezone)}</span></div></div>{index < selected.segments.length - 1 && <div className="layover"><div><strong>{durationLabel(selected.layover_minutes[index])} layover in {segment.destination}</strong></div></div>}</Fragment>)}</div>
+        {selected.layover_minutes.length > 0 && <section className="connection-info"><h3>Connection details</h3>{selected.layover_minutes.map((minutes, index) => <div key={index}><strong>{selected.segments[index].destination}</strong><span>{durationLabel(minutes)} layover</span></div>)}</section>}
         <button className={`choose-button ${chosen ? 'success' : ''}`} onClick={() => setChosen(true)}>{chosen ? 'Flight selected' : `Choose this flight — $${selected.price_usd} one way`}</button></section></div>}
   </main>
 }
