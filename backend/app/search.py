@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, timedelta
 
 
 AIRPORTS = {
@@ -48,6 +48,7 @@ def _segment(
 
 def _fixtures(travel_date: date) -> dict[tuple[str, str], list[Itinerary]]:
     day = travel_date.isoformat()
+    next_day = (travel_date + timedelta(days=1)).isoformat()
     return {
         ("JFK", "LAX"): [
             Itinerary("jfk-lax-direct", (_segment("AA 1", "JFK", "LAX", f"{day}T08:00:00-05:00", f"{day}T11:20:00-08:00", 380),), 380, 319),
@@ -59,7 +60,7 @@ def _fixtures(travel_date: date) -> dict[tuple[str, str], list[Itinerary]]:
         ("SFO", "NRT"): [
             Itinerary("sfo-sea-nrt-valid", (
                 _segment("AS 1087", "SFO", "SEA", f"{day}T07:00:00-08:00", f"{day}T09:10:00-08:00", 130),
-                _segment("JL 67", "SEA", "NRT", f"{day}T10:50:00-08:00", "2024-03-16T14:20:00+09:00", 630),
+                _segment("JL 67", "SEA", "NRT", f"{day}T10:50:00-08:00", f"{next_day}T14:20:00+09:00", 630),
             ), 860, 742, (100,), 90),
         ],
         ("BOS", "SEA"): [
